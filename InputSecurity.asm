@@ -1,16 +1,14 @@
 INCLUDE Irvine32.inc
-
-CreateDynamicCanary PROTO
-ValidateCanary      PROTO
+INCLUDE ProtectionMacros_Standalone.inc
+.586
 
 .code
 PUBLIC CheckInputNoProtection
 PUBLIC CheckInputProtected
 PUBLIC AsciiToInt
-EXTERN CreateDynamicCanary:PROTO
-EXTERN ValidateCanary:PROTO
 
 MAX_SAFE_INPUT EQU 16
+MAX_PROTECTED_COPY EQU 40
 
 ; Returns EAX=1 if input length exceeds 16, else 0.
 CheckInputNoProtection PROC, pInput:PTR BYTE
@@ -25,31 +23,81 @@ NoOverflow:
     ret 4
 CheckInputNoProtection ENDP
 
-; Returns EAX=1 if canary remains intact, else 0.
+; Returns EAX=1 when protected frame is intact.
+; Returns EAX=10 on canary mismatch.
+; Returns EAX=11 on return-marker mismatch.
+; Returns EAX=12 on function-pointer guard mismatch.
+; Returns EAX=13 on switch-target guard mismatch.
+; Returns EAX=14 on frame-signature mismatch.
+; Returns EAX=15 on partial-overwrite pattern.
 CheckInputProtected PROC USES ebx ecx esi edi, pInput:PTR BYTE
-    LOCAL frame[24]:BYTE
+    LOCAL frame[40]:BYTE
     LOCAL trustedCanary:DWORD
+    LOCAL trustedRetMarker:DWORD
+    LOCAL trustedFpGuard:DWORD
+    LOCAL trustedSwitchGuard:DWORD
+    LOCAL trustedFrameSig:DWORD
 
-    call CreateDynamicCanary
-    mov trustedCanary, eax
-    mov DWORD PTR frame[16], eax
+    INIT_CANARY trustedCanary, frame[16]
+    INIT_RET_GUARD trustedRetMarker, frame[20]
+    INIT_FP_GUARD trustedFpGuard, frame[24]
+    INIT_SWITCH_GUARD trustedSwitchGuard, frame[28]
+    INIT_FRAME_SIG_GUARD trustedFrameSig, frame[32]
 
     invoke Str_length, pInput
     mov ecx, eax
     inc ecx
-    cmp ecx, 24
+    cmp ecx, MAX_PROTECTED_COPY
     jbe CopyProtected
-    mov ecx, 24
+    mov ecx, MAX_PROTECTED_COPY
 
 CopyProtected:
     mov esi, pInput
     lea edi, frame
     rep movsb
 
-    mov eax, DWORD PTR frame[16]
-    mov ebx, trustedCanary
-    call ValidateCanary
+    VALIDATE_GUARD_PARTIAL frame[16], trustedCanary, ReturnMarkerCheck, PartialOverwriteCompromised, CanaryCompromised
+
+ReturnMarkerCheck:
+    VALIDATE_GUARD_PARTIAL frame[20], trustedRetMarker, FunctionPointerCheck, PartialOverwriteCompromised, ReturnMarkerCompromised
+
+FunctionPointerCheck:
+    VALIDATE_GUARD_PARTIAL frame[24], trustedFpGuard, SwitchTargetCheck, PartialOverwriteCompromised, FunctionPointerCompromised
+
+SwitchTargetCheck:
+    VALIDATE_GUARD_PARTIAL frame[28], trustedSwitchGuard, FrameSignatureCheck, PartialOverwriteCompromised, SwitchTargetCompromised
+
+FrameSignatureCheck:
+    VALIDATE_GUARD_PARTIAL frame[32], trustedFrameSig, FrameIntact, PartialOverwriteCompromised, FrameSignatureCompromised
+
+FrameIntact:
+    mov eax, 1
     ret 4
+
+CanaryCompromised:
+    mov eax, 10
+    ret 4
+
+PartialOverwriteCompromised:
+    mov eax, 15
+    ret 4
+
+ReturnMarkerCompromised:
+    mov eax, 11
+    ret 4
+
+FunctionPointerCompromised:
+    mov eax, 12
+    ret 4
+
+SwitchTargetCompromised:
+    mov eax, 13
+    ret 4
+
+FrameSignatureCompromised:
+    mov eax, 14
+    ret 4
+
 CheckInputProtected ENDP
 
 ; Converts optional-sign decimal string to signed integer.

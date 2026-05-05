@@ -1,134 +1,196 @@
 INCLUDE Irvine32.inc
-
-; External Prototypes
-CreateDynamicCanary PROTO
-ValidateCanary      PROTO
+INCLUDE ProtectionMacros_Standalone.inc
+.586
 
 .code
-PUBLIC CheckInputNoProtection
-PUBLIC CheckInputProtected
-PUBLIC AsciiToInt
-PUBLIC AddOperation
-PUBLIC SubOperation
-PUBLIC MulOperation
-PUBLIC DivOperation
-; Also list the external functions this file needs
-EXTERN CreateDynamicCanary:PROTO
-EXTERN ValidateCanary:PROTO
+PUBLIC XorEncryptOperation
+PUBLIC XorDecryptOperation
+PUBLIC CaesarEncryptOperation
+PUBLIC CaesarDecryptOperation
+PUBLIC HashMixOperation
+PUBLIC ChecksumOperation
 
-MAX_SAFE_INPUT EQU 16
+AttackISR PROTO, attackCode:DWORD
+XorEncryptCore PROTO, plain:SDWORD, key:SDWORD
+XorDecryptCore PROTO, cipher:SDWORD, key:SDWORD
+CaesarEncryptCore PROTO, plain:SDWORD, key:SDWORD
+CaesarDecryptCore PROTO, cipher:SDWORD, key:SDWORD
+HashMixCore PROTO, a:SDWORD, b:SDWORD
+ChecksumCore PROTO, a:SDWORD, b:SDWORD
 
-;---------------------------------------------------------
-; CheckInputNoProtection:
-; Returns EAX=1 if input length exceeds 16 (overflow-like), else 0.
-;---------------------------------------------------------
-CheckInputNoProtection PROC, pInput:PTR BYTE
-    invoke Str_length, pInput
-    cmp eax, MAX_SAFE_INPUT
-    jbe NoOverflow
-    mov eax, 1
-    ret 4
+XorEncryptCore PROC, plain:SDWORD, key:SDWORD
+    mov eax, plain
+    xor eax, key
+    ret 8
+XorEncryptCore ENDP
 
-NoOverflow:
-    xor eax, eax
-    ret 4
-CheckInputNoProtection ENDP
-
-;---------------------------------------------------------
-; CheckInputProtected:
-; Copies user input into a 16-byte local buffer with adjacent canary.
-; Returns EAX=1 if canary intact, 0 if corrupted.
-;---------------------------------------------------------
-CheckInputProtected PROC USES ebx ecx esi edi, pInput:PTR BYTE
+; XOR encryption/decryption are symmetric.
+XorEncryptOperation PROC USES ebx, plain:SDWORD, key:SDWORD
     LOCAL frame[24]:BYTE
     LOCAL trustedCanary:DWORD
+    LOCAL opResult:SDWORD
 
-    call CreateDynamicCanary
-    mov trustedCanary, eax
-    mov DWORD PTR frame[16], eax
+    INIT_CANARY trustedCanary, frame[16]
 
-    invoke Str_length, pInput
-    mov ecx, eax
-    inc ecx
-    cmp ecx, 24
-    jbe CopyProtected
-    mov ecx, 24
+    invoke XorEncryptCore, plain, key
+    mov opResult, eax
 
-CopyProtected:
-    mov esi, pInput
-    lea edi, frame
-    rep movsb
+    VERIFY_CANARY frame[16], trustedCanary, XorEncryptGuardFail
 
-    mov eax, DWORD PTR frame[16]
-    mov ebx, trustedCanary
-    call ValidateCanary
-    ret 4
-CheckInputProtected ENDP
+    mov eax, opResult
+    ret 8
 
-;---------------------------------------------------------
-; AsciiToInt:
-; Converts optional-sign decimal string to signed integer.
-;---------------------------------------------------------
-AsciiToInt PROC USES ebx ecx edx esi, pInput:PTR BYTE
-    mov esi, pInput
+XorEncryptGuardFail:
+    invoke AttackISR, 14
     xor eax, eax
-    mov ebx, 1
+    ret 8
+XorEncryptOperation ENDP
 
-    mov dl, [esi]
-    cmp dl, '-'
-    jne ParseDigits
-    mov ebx, -1
-    inc esi
+XorDecryptCore PROC, cipher:SDWORD, key:SDWORD
+    mov eax, cipher
+    xor eax, key
+    ret 8
+XorDecryptCore ENDP
 
-ParseDigits:
-    mov dl, [esi]
-    cmp dl, 0
-    je ApplySign
-    cmp dl, '0'
-    jb ApplySign
-    cmp dl, '9'
-    ja ApplySign
+XorDecryptOperation PROC USES ebx, cipher:SDWORD, key:SDWORD
+    LOCAL frame[24]:BYTE
+    LOCAL trustedCanary:DWORD
+    LOCAL opResult:SDWORD
 
-    imul eax, 10
-    movzx ecx, dl
-    sub ecx, '0'
-    add eax, ecx
-    inc esi
-    jmp ParseDigits
+    INIT_CANARY trustedCanary, frame[16]
 
-ApplySign:
-    cmp ebx, 1
-    je DoneParse
-    neg eax
+    invoke XorDecryptCore, cipher, key
+    mov opResult, eax
 
-DoneParse:
-    ret 4
-AsciiToInt ENDP
+    VERIFY_CANARY frame[16], trustedCanary, XorDecryptGuardFail
 
-AddOperation PROC, a:SDWORD, b:SDWORD
+    mov eax, opResult
+    ret 8
+
+XorDecryptGuardFail:
+    invoke AttackISR, 14
+    xor eax, eax
+    ret 8
+XorDecryptOperation ENDP
+
+CaesarEncryptCore PROC, plain:SDWORD, key:SDWORD
+    mov eax, plain
+    add eax, key
+    and eax, 0FFh
+    ret 8
+CaesarEncryptCore ENDP
+
+; Caesar-style byte transform on low 8 bits.
+CaesarEncryptOperation PROC USES ebx, plain:SDWORD, key:SDWORD
+    LOCAL frame[24]:BYTE
+    LOCAL trustedCanary:DWORD
+    LOCAL opResult:SDWORD
+
+    INIT_CANARY trustedCanary, frame[16]
+
+    invoke CaesarEncryptCore, plain, key
+    mov opResult, eax
+
+    VERIFY_CANARY frame[16], trustedCanary, CaesarEncryptGuardFail
+
+    mov eax, opResult
+    ret 8
+
+CaesarEncryptGuardFail:
+    invoke AttackISR, 14
+    xor eax, eax
+    ret 8
+CaesarEncryptOperation ENDP
+
+CaesarDecryptCore PROC, cipher:SDWORD, key:SDWORD
+    mov eax, cipher
+    sub eax, key
+    and eax, 0FFh
+    ret 8
+CaesarDecryptCore ENDP
+
+CaesarDecryptOperation PROC USES ebx, cipher:SDWORD, key:SDWORD
+    LOCAL frame[24]:BYTE
+    LOCAL trustedCanary:DWORD
+    LOCAL opResult:SDWORD
+
+    INIT_CANARY trustedCanary, frame[16]
+
+    invoke CaesarDecryptCore, cipher, key
+    mov opResult, eax
+
+    VERIFY_CANARY frame[16], trustedCanary, CaesarDecryptGuardFail
+
+    mov eax, opResult
+    ret 8
+
+CaesarDecryptGuardFail:
+    invoke AttackISR, 14
+    xor eax, eax
+    ret 8
+CaesarDecryptOperation ENDP
+
+HashMixCore PROC USES ebx, a:SDWORD, b:SDWORD
     mov eax, a
+    mov ebx, b
+    rol eax, 5
+    xor eax, ebx
+    imul eax, eax, 45D9F3Bh
+    xor eax, 0A5A5A5A5h
+    ret 8
+HashMixCore ENDP
+
+; Non-cryptographic mixing hash for educational demo.
+HashMixOperation PROC USES ebx, a:SDWORD, b:SDWORD
+    LOCAL frame[24]:BYTE
+    LOCAL trustedCanary:DWORD
+    LOCAL opResult:SDWORD
+
+    INIT_CANARY trustedCanary, frame[16]
+
+    invoke HashMixCore, a, b
+    mov opResult, eax
+
+    VERIFY_CANARY frame[16], trustedCanary, HashMixGuardFail
+
+    mov eax, opResult
+    ret 8
+
+HashMixGuardFail:
+    invoke AttackISR, 14
+    xor eax, eax
+    ret 8
+HashMixOperation ENDP
+
+ChecksumCore PROC, a:SDWORD, b:SDWORD
+    mov eax, a
+    add eax, 09E3779B9h
+    xor eax, b
+    ror eax, 7
+    imul eax, eax, 33
     add eax, b
     ret 8
-AddOperation ENDP
+ChecksumCore ENDP
 
-SubOperation PROC, a:SDWORD, b:SDWORD
-    mov eax, a
-    sub eax, b
-    ret 8
-SubOperation ENDP
+ChecksumOperation PROC USES ebx, a:SDWORD, b:SDWORD
+    LOCAL frame[24]:BYTE
+    LOCAL trustedCanary:DWORD
+    LOCAL opResult:SDWORD
 
-MulOperation PROC, a:SDWORD, b:SDWORD
-    mov eax, a
-    imul eax, b
-    ret 8
-MulOperation ENDP
+    INIT_CANARY trustedCanary, frame[16]
 
-DivOperation PROC USES ebx edx, a:SDWORD, b:SDWORD
-    mov eax, a
-    cdq
-    mov ebx, b
-    idiv ebx
+    invoke ChecksumCore, a, b
+    mov opResult, eax
+
+    VERIFY_CANARY frame[16], trustedCanary, ChecksumGuardFail
+
+    mov eax, opResult
     ret 8
-DivOperation ENDP
+
+ChecksumGuardFail:
+    invoke AttackISR, 14
+    xor eax, eax
+    ret 8
+ChecksumOperation ENDP
 
 END

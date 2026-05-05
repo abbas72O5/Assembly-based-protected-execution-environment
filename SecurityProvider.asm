@@ -9,6 +9,10 @@ INCLUDE Irvine32.inc
 PUBLIC CreateDynamicCanary
 PUBLIC ValidateCanary
 PUBLIC ValidateReturnAddress
+PUBLIC CreateFunctionPointerGuard
+PUBLIC CreateSwitchGuard
+PUBLIC CreateFrameSignature
+PUBLIC ValidatePartialOverwrite
 ;---------------------------------------------------------
 ; CreateDynamicCanary:
 ; Generates a unique value using CPU timestamp and EBP.
@@ -55,5 +59,69 @@ ReturnMismatch:
     mov eax, 0
     ret
 ValidateReturnAddress ENDP
+
+;---------------------------------------------------------
+; CreateFunctionPointerGuard:
+; Produces a guard value for indirect-call / function-pointer integrity checks.
+;---------------------------------------------------------
+CreateFunctionPointerGuard PROC
+    rdtsc
+    xor eax, ebp
+    rol eax, 7
+    xor eax, 0F1E2D3Ch
+    ret
+CreateFunctionPointerGuard ENDP
+
+;---------------------------------------------------------
+; CreateSwitchGuard:
+; Produces a guard value for switch-table / jump-target integrity checks.
+;---------------------------------------------------------
+CreateSwitchGuard PROC
+    rdtsc
+    xor eax, ebp
+    ror eax, 5
+    xor eax, 0C3D2E1F0h
+    ret
+CreateSwitchGuard ENDP
+
+;---------------------------------------------------------
+; CreateFrameSignature:
+; Produces a stack-frame signature for local frame corruption detection.
+;---------------------------------------------------------
+CreateFrameSignature PROC
+    rdtsc
+    xor eax, esp
+    xor eax, ebp
+    add eax, 13579BDFh
+    ret
+CreateFrameSignature ENDP
+
+;---------------------------------------------------------
+; ValidatePartialOverwrite:
+; Returns 1 if exact match, 2 if low-word partial overwrite is suspected, 0 otherwise.
+;---------------------------------------------------------
+ValidatePartialOverwrite PROC
+    cmp eax, ebx
+    je PartialOk
+
+    mov ecx, eax
+    xor ecx, ebx
+    mov edx, ecx
+    and edx, 0FFFF0000h
+    jne PartialFail
+    and ecx, 0000FFFFh
+    cmp ecx, 0
+    je PartialFail
+    mov eax, 2
+    ret
+
+PartialFail:
+    mov eax, 0
+    ret
+
+PartialOk:
+    mov eax, 1
+    ret
+ValidatePartialOverwrite ENDP
 
 END
